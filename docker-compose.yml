@@ -1,10 +1,10 @@
 version: '3.2'
 services:
   kbs:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.kbs
-    image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/kbs:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.kbs
+    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/kbs:latest
     command: [
         "/usr/local/bin/kbs",
         "--config-file",
@@ -21,10 +21,10 @@ services:
     - as
 
   as:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.as-grpc
-    image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.as-grpc
+    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as:latest
     ports:
     - "50004:50004"
     restart: always
@@ -45,10 +45,10 @@ services:
     - rvps
 
   as-restful:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile.as-restful
-    image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as-restful:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.as-restful
+    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as-restful:latest
     ports:
     - "50005:50005"
     restart: always

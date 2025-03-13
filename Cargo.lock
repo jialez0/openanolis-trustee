@@ -539,7 +539,7 @@ dependencies = [
  "env_logger 0.10.2",
  "futures",
  "hex",
- "kbs-types 0.6.0 (git+https://github.com/jialez0/kbs-types.git?branch=system-attester)",
+ "kbs-types 0.6.0 (git+https://github.com/inclavare-containers/kbs-types.git?branch=main)",
  "lazy_static",
  "log",
  "openssl",
@@ -1910,9 +1910,9 @@ dependencies = [
 
 [[package]]
 name = "eventlog-rs"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "606e113813a3db3f1f42b273d4fb89ca8ef1e2bd5b97befd08b260ae5708be8d"
+checksum = "8032cb35e23e548f50306064c37de06e04eb51378bce8ad99f0a7f119b30204e"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -3041,7 +3041,7 @@ dependencies = [
  "env_logger 0.10.2",
  "jsonwebtoken",
  "jwt-simple 0.11.9",
- "kbs-types 0.6.0 (git+https://github.com/jialez0/kbs-types.git?branch=system-attester)",
+ "kbs-types 0.6.0 (git+https://github.com/inclavare-containers/kbs-types.git?branch=main)",
  "kms",
  "lazy_static",
  "log",
@@ -3089,7 +3089,7 @@ dependencies = [
 [[package]]
 name = "kbs-types"
 version = "0.6.0"
-source = "git+https://github.com/jialez0/kbs-types.git?branch=system-attester#8e3400c436c47b405e381a6de4db871ea480e47f"
+source = "git+https://github.com/inclavare-containers/kbs-types.git?branch=main#d8813950a035b037322cdcde53b2a9c9f513489b"
 dependencies = [
  "serde",
  "serde_json",
@@ -6580,7 +6580,7 @@ dependencies = [
  "intel-tee-quote-verification-rs",
  "jsonwebkey",
  "jsonwebtoken",
- "kbs-types 0.6.0 (git+https://github.com/jialez0/kbs-types.git?branch=system-attester)",
+ "kbs-types 0.6.0 (git+https://github.com/inclavare-containers/kbs-types.git?branch=main)",
  "log",
  "openssl",
  "rstest",
@@ -6591,12 +6591,14 @@ dependencies = [
  "serde_with",
  "serial_test",
  "sev 3.2.0",
+ "sha1",
  "sha2",
  "shadow-rs",
  "strum 0.25.0",
  "thiserror 1.0.69",
  "tokio",
  "tonic-build 0.11.0",
+ "tss-esapi",
  "veraison-apiclient",
  "x509-parser",
 ]
