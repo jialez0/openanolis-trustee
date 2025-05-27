@@ -1,0 +1,186 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-sync-config
+data:
+  git-sync.sh: |
+    #!/bin/bash
+    set -e
+    
+    DATA_DIR="/opt/trustee"
+    GIT_REPO_DIR="/git-repo"
+    GIT_REMOTE_URL="${GIT_REMOTE_URL:-}"
+    GIT_BRANCH="${GIT_BRANCH:-main}"
+    SYNC_INTERVAL="${SYNC_INTERVAL:-300}"  # 5分钟
+    
+    # 初始化Git配置
+    git config --global user.name "Trustee Service"
+    git config --global user.email "trustee@service.local"
+    git config --global init.defaultBranch main
+    
+    # 初始化或克隆仓库
+    init_repo() {
+        if [ -n "$GIT_REMOTE_URL" ]; then
+            echo "克隆远程仓库: $GIT_REMOTE_URL"
+            git clone "$GIT_REMOTE_URL" "$GIT_REPO_DIR" || {
+                echo "克隆失败，创建新仓库"
+                mkdir -p "$GIT_REPO_DIR"
+                cd "$GIT_REPO_DIR"
+                git init
+                git remote add origin "$GIT_REMOTE_URL"
+            }
+        else
+            echo "创建本地Git仓库"
+            mkdir -p "$GIT_REPO_DIR"
+            cd "$GIT_REPO_DIR"
+            git init
+        fi
+    }
+    
+    # 恢复数据
+    restore_data() {
+        cd "$GIT_REPO_DIR"
+        
+        if [ -n "$GIT_REMOTE_URL" ]; then
+            echo "从远程仓库拉取最新数据..."
+            git fetch origin "$GIT_BRANCH" || echo "拉取失败，使用本地数据"
+            git checkout "$GIT_BRANCH" || git checkout -b "$GIT_BRANCH"
+            git reset --hard "origin/$GIT_BRANCH" || echo "重置失败，使用当前状态"
+        fi
+        
+        if [ -d "$GIT_REPO_DIR/trustee-data" ]; then
+            echo "恢复数据到 $DATA_DIR"
+            mkdir -p "$DATA_DIR"
+            cp -r "$GIT_REPO_DIR/trustee-data/"* "$DATA_DIR/" 2>/dev/null || echo "没有数据需要恢复"
+        fi
+    }
+    
+    # 备份数据
+    backup_data() {
+        cd "$GIT_REPO_DIR"
+        
+        # 创建数据目录
+        mkdir -p "$GIT_REPO_DIR/trustee-data"
+        
+        # 同步数据
+        if [ -d "$DATA_DIR" ]; then
+            rsync -av --delete "$DATA_DIR/" "$GIT_REPO_DIR/trustee-data/"
+        fi
+        
+        # 检查是否有变化
+        if git diff --quiet && git diff --cached --quiet; then
+            echo "没有数据变化，跳过提交"
+            return
+        fi
+        
+        # 提交变化
+        git add .
+        git commit -m "自动备份 - $(date '+%Y-%m-%d %H:%M:%S')" || echo "提交失败"
+        
+        # 推送到远程仓库
+        if [ -n "$GIT_REMOTE_URL" ]; then
+            git push origin "$GIT_BRANCH" || echo "推送失败，将在下次重试"
+        fi
+        
+        echo "数据备份完成: $(date)"
+    }
+    
+    # 主函数
+    case "$1" in
+        "init")
+            init_repo
+            restore_data
+            ;;
+        "backup")
+            init_repo
+            while true; do
+                backup_data
+                sleep "$SYNC_INTERVAL"
+            done
+            ;;
+        "restore")
+            init_repo
+            restore_data
+            ;;
+        *)
+            echo "用法: $0 {init|backup|restore}"
+            exit 1
+            ;;
+    esac
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+type: Opaque
+data:
+  # 如果使用私有仓库，需要配置认证信息
+  # git-username: <base64-encoded-username>
+  # git-password: <base64-encoded-password>
+  # ssh-private-key: <base64-encoded-ssh-key>
+  placeholder: cGxhY2Vob2xkZXI=  # placeholder
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-git-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-git-persistence
+  template:
+    metadata:
+      labels:
+        app: trustee-git-persistence
+    spec:
+      initContainers:
+      - name: git-restore
+        image: alpine/git:latest
+        command: ["/bin/sh", "/scripts/git-sync.sh", "init"]
+        env:
+        - name: GIT_REMOTE_URL
+          value: ""  # 设置您的Git仓库URL
+        - name: GIT_BRANCH
+          value: "main"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: git-repo
+          mountPath: /git-repo
+        - name: git-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: git-backup-sidecar
+        image: alpine/git:latest
+        command: ["/bin/sh", "/scripts/git-sync.sh", "backup"]
+        env:
+        - name: GIT_REMOTE_URL
+          value: ""  # 设置您的Git仓库URL
+        - name: GIT_BRANCH
+          value: "main"
+        - name: SYNC_INTERVAL
+          value: "300"  # 5分钟同步一次
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: git-repo
+          mountPath: /git-repo
+        - name: git-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: git-repo
+        emptyDir: {}
+      - name: git-scripts
+        configMap:
+          name: git-sync-config
+          defaultMode: 0755 

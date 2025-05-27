@@ -1,0 +1,378 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: network-fs-config
+data:
+  nfs-sync.sh: |
+    #!/bin/bash
+    set -e
+    
+    DATA_DIR="/opt/trustee"
+    NFS_MOUNT_DIR="/nfs-storage"
+    BACKUP_DIR="$NFS_MOUNT_DIR/trustee-backups"
+    SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
+    
+    # 挂载NFS
+    mount_nfs() {
+        if [ -n "$NFS_SERVER" ] && [ -n "$NFS_PATH" ]; then
+            echo "挂载NFS: $NFS_SERVER:$NFS_PATH"
+            mkdir -p "$NFS_MOUNT_DIR"
+            mount -t nfs "$NFS_SERVER:$NFS_PATH" "$NFS_MOUNT_DIR"
+            mkdir -p "$BACKUP_DIR"
+        fi
+    }
+    
+    # 卸载NFS
+    umount_nfs() {
+        if mountpoint -q "$NFS_MOUNT_DIR"; then
+            umount "$NFS_MOUNT_DIR"
+        fi
+    }
+    
+    # 恢复数据
+    restore_data() {
+        if [ -d "$BACKUP_DIR" ]; then
+            LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/trustee-data-*.tar.gz 2>/dev/null | head -n1)
+            if [ -n "$LATEST_BACKUP" ]; then
+                echo "从NFS恢复数据: $LATEST_BACKUP"
+                mkdir -p "$DATA_DIR"
+                tar -xzf "$LATEST_BACKUP" -C "$DATA_DIR"
+                echo "数据恢复完成"
+            else
+                echo "没有找到备份文件"
+            fi
+        fi
+    }
+    
+    # 备份数据
+    backup_data() {
+        if [ -d "$DATA_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+            BACKUP_FILE="$BACKUP_DIR/trustee-data-$(date +%Y%m%d-%H%M%S).tar.gz"
+            echo "备份数据到NFS: $BACKUP_FILE"
+            tar -czf "$BACKUP_FILE" -C "$DATA_DIR" .
+            
+            # 保留最近20个备份
+            ls -t "$BACKUP_DIR"/trustee-data-*.tar.gz | tail -n +21 | xargs -r rm
+            echo "数据备份完成"
+        fi
+    }
+    
+    # 信号处理
+    cleanup() {
+        echo "收到退出信号，清理资源..."
+        umount_nfs
+        exit 0
+    }
+    
+    trap cleanup SIGTERM SIGINT
+    
+    case "$1" in
+        "init")
+            mount_nfs
+            restore_data
+            ;;
+        "backup")
+            mount_nfs
+            while true; do
+                backup_data
+                sleep "$SYNC_INTERVAL"
+            done
+            ;;
+        *)
+            echo "用法: $0 {init|backup}"
+            exit 1
+            ;;
+    esac
+
+  sftp-sync.py: |
+    #!/usr/bin/env python3
+    import os
+    import time
+    import tarfile
+    import tempfile
+    import paramiko
+    from datetime import datetime
+    
+    class SFTPDataSync:
+        def __init__(self, host, port, username, password, remote_path):
+            self.host = host
+            self.port = port
+            self.username = username
+            self.password = password
+            self.remote_path = remote_path
+            self.data_dir = '/opt/trustee'
+            
+        def connect(self):
+            """建立SFTP连接"""
+            self.ssh = paramiko.SSHClient()
+            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh.connect(self.host, port=self.port, username=self.username, password=self.password)
+            self.sftp = self.ssh.open_sftp()
+            
+            # 确保远程目录存在
+            try:
+                self.sftp.stat(self.remote_path)
+            except FileNotFoundError:
+                self.sftp.mkdir(self.remote_path)
+                
+        def disconnect(self):
+            """断开连接"""
+            if hasattr(self, 'sftp'):
+                self.sftp.close()
+            if hasattr(self, 'ssh'):
+                self.ssh.close()
+                
+        def backup_data(self):
+            """备份数据到SFTP服务器"""
+            if not os.path.exists(self.data_dir):
+                return
+                
+            timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup_filename = f'trustee-data-{timestamp}.tar.gz'
+            
+            with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp_file:
+                # 创建压缩包
+                with tarfile.open(tmp_file.name, 'w:gz') as tar:
+                    tar.add(self.data_dir, arcname='.')
+                
+                # 上传到SFTP服务器
+                remote_file = f'{self.remote_path}/{backup_filename}'
+                self.sftp.put(tmp_file.name, remote_file)
+                print(f"数据已备份到: {remote_file}")
+                
+                # 清理临时文件
+                os.unlink(tmp_file.name)
+                
+            # 清理旧备份（保留最近10个）
+            self.cleanup_old_backups()
+            
+        def restore_data(self):
+            """从SFTP服务器恢复数据"""
+            try:
+                # 获取备份文件列表
+                files = self.sftp.listdir(self.remote_path)
+                backup_files = [f for f in files if f.startswith('trustee-data-') and f.endswith('.tar.gz')]
+                
+                if not backup_files:
+                    print("没有找到备份文件")
+                    return
+                    
+                # 选择最新的备份
+                latest_backup = sorted(backup_files)[-1]
+                remote_file = f'{self.remote_path}/{latest_backup}'
+                
+                with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp_file:
+                    # 下载备份文件
+                    self.sftp.get(remote_file, tmp_file.name)
+                    
+                    # 解压到数据目录
+                    os.makedirs(self.data_dir, exist_ok=True)
+                    with tarfile.open(tmp_file.name, 'r:gz') as tar:
+                        tar.extractall(self.data_dir)
+                        
+                    print(f"数据已从 {remote_file} 恢复")
+                    
+                    # 清理临时文件
+                    os.unlink(tmp_file.name)
+                    
+            except Exception as e:
+                print(f"恢复数据失败: {e}")
+                
+        def cleanup_old_backups(self):
+            """清理旧备份文件"""
+            try:
+                files = self.sftp.listdir(self.remote_path)
+                backup_files = [f for f in files if f.startswith('trustee-data-') and f.endswith('.tar.gz')]
+                backup_files.sort()
+                
+                # 删除除最新10个之外的所有备份
+                for old_file in backup_files[:-10]:
+                    self.sftp.remove(f'{self.remote_path}/{old_file}')
+                    print(f"删除旧备份: {old_file}")
+                    
+            except Exception as e:
+                print(f"清理旧备份失败: {e}")
+    
+    def main():
+        host = os.environ.get('SFTP_HOST')
+        port = int(os.environ.get('SFTP_PORT', '22'))
+        username = os.environ.get('SFTP_USERNAME')
+        password = os.environ.get('SFTP_PASSWORD')
+        remote_path = os.environ.get('SFTP_REMOTE_PATH', '/trustee-backups')
+        mode = os.environ.get('MODE', 'backup')
+        sync_interval = int(os.environ.get('SYNC_INTERVAL', '300'))
+        
+        if not all([host, username, password]):
+            print("错误: 缺少SFTP连接参数")
+            return
+            
+        sync = SFTPDataSync(host, port, username, password, remote_path)
+        
+        try:
+            sync.connect()
+            
+            if mode == 'restore':
+                sync.restore_data()
+            elif mode == 'backup':
+                while True:
+                    sync.backup_data()
+                    time.sleep(sync_interval)
+                    
+        except KeyboardInterrupt:
+            print("收到中断信号，退出...")
+        except Exception as e:
+            print(f"错误: {e}")
+        finally:
+            sync.disconnect()
+    
+    if __name__ == "__main__":
+        main()
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: network-fs-credentials
+type: Opaque
+data:
+  # NFS配置（如果需要认证）
+  # nfs-server: <base64-encoded-server>
+  # nfs-path: <base64-encoded-path>
+  
+  # SFTP配置
+  # sftp-host: <base64-encoded-host>
+  # sftp-username: <base64-encoded-username>
+  # sftp-password: <base64-encoded-password>
+  placeholder: cGxhY2Vob2xkZXI=
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-nfs-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-nfs-persistence
+  template:
+    metadata:
+      labels:
+        app: trustee-nfs-persistence
+    spec:
+      initContainers:
+      - name: nfs-restore
+        image: alpine:latest
+        command: ["sh", "-c", "apk add --no-cache nfs-utils && /scripts/nfs-sync.sh init"]
+        env:
+        - name: NFS_SERVER
+          value: ""  # 设置NFS服务器地址
+        - name: NFS_PATH
+          value: ""  # 设置NFS路径
+        securityContext:
+          privileged: true  # NFS挂载需要特权
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: network-fs-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: nfs-backup-sidecar
+        image: alpine:latest
+        command: ["sh", "-c", "apk add --no-cache nfs-utils && /scripts/nfs-sync.sh backup"]
+        env:
+        - name: NFS_SERVER
+          value: ""  # 设置NFS服务器地址
+        - name: NFS_PATH
+          value: ""  # 设置NFS路径
+        - name: SYNC_INTERVAL
+          value: "300"
+        securityContext:
+          privileged: true  # NFS挂载需要特权
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: network-fs-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: network-fs-scripts
+        configMap:
+          name: network-fs-config
+          defaultMode: 0755
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-sftp-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-sftp-persistence
+  template:
+    metadata:
+      labels:
+        app: trustee-sftp-persistence
+    spec:
+      initContainers:
+      - name: sftp-restore
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install paramiko && python /scripts/sftp-sync.py"]
+        env:
+        - name: MODE
+          value: "restore"
+        - name: SFTP_HOST
+          value: ""  # 设置SFTP服务器地址
+        - name: SFTP_USERNAME
+          value: ""  # 设置SFTP用户名
+        - name: SFTP_PASSWORD
+          value: ""  # 设置SFTP密码
+        - name: SFTP_REMOTE_PATH
+          value: "/trustee-backups"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: network-fs-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: sftp-backup-sidecar
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install paramiko && python /scripts/sftp-sync.py"]
+        env:
+        - name: MODE
+          value: "backup"
+        - name: SFTP_HOST
+          value: ""  # 设置SFTP服务器地址
+        - name: SFTP_USERNAME
+          value: ""  # 设置SFTP用户名
+        - name: SFTP_PASSWORD
+          value: ""  # 设置SFTP密码
+        - name: SFTP_REMOTE_PATH
+          value: "/trustee-backups"
+        - name: SYNC_INTERVAL
+          value: "300"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: network-fs-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: network-fs-scripts
+        configMap:
+          name: network-fs-config
+          defaultMode: 0755 

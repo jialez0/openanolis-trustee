@@ -1,0 +1,247 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-adapter-config
+data:
+  storage-adapter.py: |
+    #!/usr/bin/env python3
+    import os
+    import json
+    import time
+    import hashlib
+    import requests
+    import tarfile
+    import tempfile
+    from pathlib import Path
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    
+    class DataSyncHandler(FileSystemEventHandler):
+        def __init__(self, storage_client):
+            self.storage_client = storage_client
+            self.last_sync = {}
+            
+        def on_modified(self, event):
+            if not event.is_directory:
+                self.sync_file(event.src_path)
+                
+        def sync_file(self, file_path):
+            # 防止频繁同步同一文件
+            current_time = time.time()
+            if file_path in self.last_sync and current_time - self.last_sync[file_path] < 5:
+                return
+                
+            self.last_sync[file_path] = current_time
+            self.storage_client.upload_file(file_path)
+    
+    class MinIOStorageClient:
+        def __init__(self, endpoint, access_key, secret_key, bucket_name):
+            self.endpoint = endpoint
+            self.access_key = access_key
+            self.secret_key = secret_key
+            self.bucket_name = bucket_name
+            
+        def upload_file(self, file_path):
+            """上传文件到MinIO"""
+            try:
+                # 这里可以使用MinIO Python SDK
+                # 为了简化，使用HTTP API
+                relative_path = os.path.relpath(file_path, '/opt/trustee')
+                object_name = f"trustee-data/{relative_path}"
+                
+                with open(file_path, 'rb') as f:
+                    # 实际实现中应该使用MinIO SDK
+                    print(f"上传文件: {file_path} -> {object_name}")
+                    
+            except Exception as e:
+                print(f"上传文件失败: {e}")
+                
+        def download_all(self, target_dir):
+            """下载所有文件到目标目录"""
+            try:
+                # 实际实现中应该使用MinIO SDK列出并下载所有对象
+                print(f"下载所有文件到: {target_dir}")
+                
+            except Exception as e:
+                print(f"下载文件失败: {e}")
+    
+    class RedisStorageClient:
+        def __init__(self, host, port, password=None):
+            self.host = host
+            self.port = port
+            self.password = password
+            
+        def upload_file(self, file_path):
+            """将文件内容存储到Redis"""
+            try:
+                import redis
+                r = redis.Redis(host=self.host, port=self.port, password=self.password)
+                
+                relative_path = os.path.relpath(file_path, '/opt/trustee')
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                    r.set(f"trustee:file:{relative_path}", content)
+                    
+                print(f"文件已存储到Redis: {relative_path}")
+                
+            except Exception as e:
+                print(f"存储到Redis失败: {e}")
+                
+        def download_all(self, target_dir):
+            """从Redis下载所有文件"""
+            try:
+                import redis
+                r = redis.Redis(host=self.host, port=self.port, password=self.password)
+                
+                keys = r.keys("trustee:file:*")
+                for key in keys:
+                    relative_path = key.decode().replace("trustee:file:", "")
+                    file_path = os.path.join(target_dir, relative_path)
+                    
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    
+                    content = r.get(key)
+                    with open(file_path, 'wb') as f:
+                        f.write(content)
+                        
+                print(f"所有文件已从Redis恢复到: {target_dir}")
+                
+            except Exception as e:
+                print(f"从Redis恢复失败: {e}")
+    
+    def main():
+        storage_type = os.environ.get('STORAGE_TYPE', 'redis')
+        data_dir = '/opt/trustee'
+        
+        if storage_type == 'minio':
+            client = MinIOStorageClient(
+                endpoint=os.environ.get('MINIO_ENDPOINT'),
+                access_key=os.environ.get('MINIO_ACCESS_KEY'),
+                secret_key=os.environ.get('MINIO_SECRET_KEY'),
+                bucket_name=os.environ.get('MINIO_BUCKET', 'trustee-data')
+            )
+        else:  # redis
+            client = RedisStorageClient(
+                host=os.environ.get('REDIS_HOST', 'redis'),
+                port=int(os.environ.get('REDIS_PORT', '6379')),
+                password=os.environ.get('REDIS_PASSWORD')
+            )
+        
+        # 启动时恢复数据
+        if os.environ.get('MODE') == 'restore':
+            client.download_all(data_dir)
+            return
+            
+        # 监控文件变化并同步
+        event_handler = DataSyncHandler(client)
+        observer = Observer()
+        observer.schedule(event_handler, data_dir, recursive=True)
+        observer.start()
+        
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            observer.stop()
+        observer.join()
+    
+    if __name__ == "__main__":
+        main()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-storage
+  template:
+    metadata:
+      labels:
+        app: redis-storage
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        command: ["redis-server", "--appendonly", "yes"]
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  selector:
+    app: redis-storage
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-external-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-external-storage
+  template:
+    metadata:
+      labels:
+        app: trustee-external-storage
+    spec:
+      initContainers:
+      - name: data-restore
+        image: python:3.9-alpine
+        command: ["python", "/scripts/storage-adapter.py"]
+        env:
+        - name: MODE
+          value: "restore"
+        - name: STORAGE_TYPE
+          value: "redis"
+        - name: REDIS_HOST
+          value: "redis-service"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: storage-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: data-sync-sidecar
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install watchdog redis && python /scripts/storage-adapter.py"]
+        env:
+        - name: STORAGE_TYPE
+          value: "redis"
+        - name: REDIS_HOST
+          value: "redis-service"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: storage-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: storage-scripts
+        configMap:
+          name: storage-adapter-config
+          defaultMode: 0755 

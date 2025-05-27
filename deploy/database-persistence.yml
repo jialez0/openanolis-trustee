@@ -1,0 +1,441 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-sync-config
+data:
+  db-sync.py: |
+    #!/usr/bin/env python3
+    import os
+    import json
+    import time
+    import base64
+    import hashlib
+    import sqlite3
+    import psycopg2
+    from pathlib import Path
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    
+    class DatabaseFileSync:
+        def __init__(self, db_type='sqlite', **db_config):
+            self.db_type = db_type
+            self.db_config = db_config
+            self.data_dir = '/opt/trustee'
+            self.conn = None
+            
+        def connect(self):
+            """连接数据库"""
+            if self.db_type == 'sqlite':
+                db_path = self.db_config.get('path', '/tmp/trustee_data.db')
+                self.conn = sqlite3.connect(db_path)
+            elif self.db_type == 'postgresql':
+                self.conn = psycopg2.connect(
+                    host=self.db_config.get('host', 'localhost'),
+                    port=self.db_config.get('port', 5432),
+                    database=self.db_config.get('database', 'trustee'),
+                    user=self.db_config.get('user'),
+                    password=self.db_config.get('password')
+                )
+            
+            self.init_tables()
+            
+        def init_tables(self):
+            """初始化数据表"""
+            cursor = self.conn.cursor()
+            
+            if self.db_type == 'sqlite':
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS file_data (
+                        file_path TEXT PRIMARY KEY,
+                        content BLOB,
+                        checksum TEXT,
+                        modified_time REAL,
+                        created_time REAL DEFAULT (datetime('now'))
+                    )
+                ''')
+            elif self.db_type == 'postgresql':
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS file_data (
+                        file_path VARCHAR(512) PRIMARY KEY,
+                        content BYTEA,
+                        checksum VARCHAR(64),
+                        modified_time TIMESTAMP,
+                        created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+            
+            self.conn.commit()
+            
+        def get_file_checksum(self, file_path):
+            """计算文件校验和"""
+            if not os.path.exists(file_path):
+                return None
+                
+            hasher = hashlib.sha256()
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+            
+        def store_file(self, file_path):
+            """存储文件到数据库"""
+            if not os.path.exists(file_path):
+                return
+                
+            relative_path = os.path.relpath(file_path, self.data_dir)
+            checksum = self.get_file_checksum(file_path)
+            modified_time = os.path.getmtime(file_path)
+            
+            # 检查文件是否已经存在且未修改
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT checksum FROM file_data WHERE file_path = ?",
+                (relative_path,)
+            )
+            result = cursor.fetchone()
+            
+            if result and result[0] == checksum:
+                return  # 文件未修改，跳过
+                
+            # 读取文件内容
+            with open(file_path, 'rb') as f:
+                content = f.read()
+                
+            # 存储到数据库
+            if self.db_type == 'sqlite':
+                cursor.execute('''
+                    INSERT OR REPLACE INTO file_data 
+                    (file_path, content, checksum, modified_time) 
+                    VALUES (?, ?, ?, ?)
+                ''', (relative_path, content, checksum, modified_time))
+            elif self.db_type == 'postgresql':
+                cursor.execute('''
+                    INSERT INTO file_data 
+                    (file_path, content, checksum, modified_time) 
+                    VALUES (%s, %s, %s, to_timestamp(%s))
+                    ON CONFLICT (file_path) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    checksum = EXCLUDED.checksum,
+                    modified_time = EXCLUDED.modified_time
+                ''', (relative_path, content, checksum, modified_time))
+                
+            self.conn.commit()
+            print(f"文件已存储到数据库: {relative_path}")
+            
+        def restore_file(self, relative_path, target_path):
+            """从数据库恢复单个文件"""
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT content FROM file_data WHERE file_path = ?",
+                (relative_path,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                with open(target_path, 'wb') as f:
+                    f.write(result[0])
+                print(f"文件已恢复: {relative_path}")
+                
+        def restore_all_files(self):
+            """从数据库恢复所有文件"""
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT file_path, content FROM file_data")
+            
+            for relative_path, content in cursor.fetchall():
+                target_path = os.path.join(self.data_dir, relative_path)
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                
+                with open(target_path, 'wb') as f:
+                    f.write(content)
+                    
+            print(f"所有文件已恢复到: {self.data_dir}")
+            
+        def sync_directory(self):
+            """同步整个目录到数据库"""
+            if not os.path.exists(self.data_dir):
+                return
+                
+            for root, dirs, files in os.walk(self.data_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    self.store_file(file_path)
+                    
+        def cleanup_deleted_files(self):
+            """清理数据库中已删除的文件记录"""
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT file_path FROM file_data")
+            
+            for (relative_path,) in cursor.fetchall():
+                full_path = os.path.join(self.data_dir, relative_path)
+                if not os.path.exists(full_path):
+                    cursor.execute(
+                        "DELETE FROM file_data WHERE file_path = ?",
+                        (relative_path,)
+                    )
+                    print(f"删除数据库中的文件记录: {relative_path}")
+                    
+            self.conn.commit()
+            
+        def close(self):
+            """关闭数据库连接"""
+            if self.conn:
+                self.conn.close()
+    
+    class FileChangeHandler(FileSystemEventHandler):
+        def __init__(self, db_sync):
+            self.db_sync = db_sync
+            self.last_sync = {}
+            
+        def on_modified(self, event):
+            if not event.is_directory:
+                self.sync_file(event.src_path)
+                
+        def on_created(self, event):
+            if not event.is_directory:
+                self.sync_file(event.src_path)
+                
+        def sync_file(self, file_path):
+            # 防止频繁同步
+            current_time = time.time()
+            if file_path in self.last_sync and current_time - self.last_sync[file_path] < 5:
+                return
+                
+            self.last_sync[file_path] = current_time
+            self.db_sync.store_file(file_path)
+    
+    def main():
+        db_type = os.environ.get('DB_TYPE', 'sqlite')
+        mode = os.environ.get('MODE', 'sync')
+        
+        if db_type == 'sqlite':
+            db_config = {'path': os.environ.get('SQLITE_PATH', '/shared/trustee_data.db')}
+        elif db_type == 'postgresql':
+            db_config = {
+                'host': os.environ.get('POSTGRES_HOST', 'postgres'),
+                'port': int(os.environ.get('POSTGRES_PORT', '5432')),
+                'database': os.environ.get('POSTGRES_DB', 'trustee'),
+                'user': os.environ.get('POSTGRES_USER'),
+                'password': os.environ.get('POSTGRES_PASSWORD')
+            }
+        else:
+            print(f"不支持的数据库类型: {db_type}")
+            return
+            
+        db_sync = DatabaseFileSync(db_type, **db_config)
+        
+        try:
+            db_sync.connect()
+            
+            if mode == 'restore':
+                db_sync.restore_all_files()
+            elif mode == 'sync':
+                # 初始同步
+                db_sync.sync_directory()
+                
+                # 监控文件变化
+                event_handler = FileChangeHandler(db_sync)
+                observer = Observer()
+                observer.schedule(event_handler, db_sync.data_dir, recursive=True)
+                observer.start()
+                
+                try:
+                    while True:
+                        time.sleep(60)  # 每分钟清理一次删除的文件
+                        db_sync.cleanup_deleted_files()
+                except KeyboardInterrupt:
+                    observer.stop()
+                observer.join()
+                
+        except Exception as e:
+            print(f"错误: {e}")
+        finally:
+            db_sync.close()
+    
+    if __name__ == "__main__":
+        main()
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-storage
+  template:
+    metadata:
+      labels:
+        app: postgres-storage
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_DB
+          value: trustee
+        - name: POSTGRES_USER
+          value: trustee_user
+        - name: POSTGRES_PASSWORD
+          value: trustee_password
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  selector:
+    app: postgres-storage
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-database-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-db-persistence
+  template:
+    metadata:
+      labels:
+        app: trustee-db-persistence
+    spec:
+      initContainers:
+      - name: db-restore
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install psycopg2-binary watchdog && python /scripts/db-sync.py"]
+        env:
+        - name: MODE
+          value: "restore"
+        - name: DB_TYPE
+          value: "postgresql"
+        - name: POSTGRES_HOST
+          value: "postgres-service"
+        - name: POSTGRES_USER
+          value: "trustee_user"
+        - name: POSTGRES_PASSWORD
+          value: "trustee_password"
+        - name: POSTGRES_DB
+          value: "trustee"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: db-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: db-sync-sidecar
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install psycopg2-binary watchdog && python /scripts/db-sync.py"]
+        env:
+        - name: MODE
+          value: "sync"
+        - name: DB_TYPE
+          value: "postgresql"
+        - name: POSTGRES_HOST
+          value: "postgres-service"
+        - name: POSTGRES_USER
+          value: "trustee_user"
+        - name: POSTGRES_PASSWORD
+          value: "trustee_password"
+        - name: POSTGRES_DB
+          value: "trustee"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: db-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: db-scripts
+        configMap:
+          name: database-sync-config
+          defaultMode: 0755
+
+---
+# SQLite版本的部署（适用于单实例场景）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-with-sqlite-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-sqlite-persistence
+  template:
+    metadata:
+      labels:
+        app: trustee-sqlite-persistence
+    spec:
+      initContainers:
+      - name: sqlite-restore
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install watchdog && python /scripts/db-sync.py"]
+        env:
+        - name: MODE
+          value: "restore"
+        - name: DB_TYPE
+          value: "sqlite"
+        - name: SQLITE_PATH
+          value: "/shared/trustee_data.db"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: shared-storage
+          mountPath: /shared
+        - name: db-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+      - name: sqlite-sync-sidecar
+        image: python:3.9-alpine
+        command: ["sh", "-c", "pip install watchdog && python /scripts/db-sync.py"]
+        env:
+        - name: MODE
+          value: "sync"
+        - name: DB_TYPE
+          value: "sqlite"
+        - name: SQLITE_PATH
+          value: "/shared/trustee_data.db"
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: shared-storage
+          mountPath: /shared
+        - name: db-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: shared-storage
+        emptyDir: {}
+      - name: db-scripts
+        configMap:
+          name: database-sync-config
+          defaultMode: 0755 

@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-sync-script
+data:
+  sync-data.sh: |
+    #!/bin/bash
+    set -e
+    
+    DATA_DIR="/opt/trustee"
+    BACKUP_DIR="/shared/backup"
+    RESTORE_DIR="/shared/restore"
+    
+    # 创建必要的目录
+    mkdir -p "$BACKUP_DIR" "$RESTORE_DIR"
+    
+    # 数据备份函数
+    backup_data() {
+        if [ -d "$DATA_DIR" ]; then
+            echo "$(date): 开始备份数据..."
+            tar -czf "$BACKUP_DIR/trustee-data-$(date +%Y%m%d-%H%M%S).tar.gz" -C "$DATA_DIR" .
+            # 保留最近10个备份
+            ls -t "$BACKUP_DIR"/trustee-data-*.tar.gz | tail -n +11 | xargs -r rm
+            echo "$(date): 数据备份完成"
+        fi
+    }
+    
+    # 数据恢复函数
+    restore_data() {
+        if [ -f "$RESTORE_DIR/restore.tar.gz" ]; then
+            echo "$(date): 发现恢复文件，开始恢复数据..."
+            mkdir -p "$DATA_DIR"
+            tar -xzf "$RESTORE_DIR/restore.tar.gz" -C "$DATA_DIR"
+            rm "$RESTORE_DIR/restore.tar.gz"
+            echo "$(date): 数据恢复完成"
+        else
+            # 尝试从最新备份恢复
+            LATEST_BACKUP=$(ls -t "$BACKUP_DIR"/trustee-data-*.tar.gz 2>/dev/null | head -n1)
+            if [ -n "$LATEST_BACKUP" ]; then
+                echo "$(date): 从最新备份恢复数据: $LATEST_BACKUP"
+                mkdir -p "$DATA_DIR"
+                tar -xzf "$LATEST_BACKUP" -C "$DATA_DIR"
+                echo "$(date): 数据恢复完成"
+            fi
+        fi
+    }
+    
+    # 主循环
+    case "$1" in
+        "init")
+            restore_data
+            ;;
+        "backup")
+            while true; do
+                backup_data
+                sleep 300  # 每5分钟备份一次
+            done
+            ;;
+        *)
+            echo "用法: $0 {init|backup}"
+            exit 1
+            ;;
+    esac
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trustee-service-with-persistence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trustee-service
+  template:
+    metadata:
+      labels:
+        app: trustee-service
+    spec:
+      initContainers:
+      - name: data-restore
+        image: alpine:latest
+        command: ["/bin/sh", "/scripts/sync-data.sh", "init"]
+        volumeMounts:
+        - name: shared-data
+          mountPath: /shared
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: sync-scripts
+          mountPath: /scripts
+      containers:
+      - name: trustee-service
+        image: your-trustee-service:latest
+        volumeMounts:
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: shared-data
+          mountPath: /shared
+      - name: data-backup-sidecar
+        image: alpine:latest
+        command: ["/bin/sh", "/scripts/sync-data.sh", "backup"]
+        volumeMounts:
+        - name: shared-data
+          mountPath: /shared
+        - name: trustee-data
+          mountPath: /opt/trustee
+        - name: sync-scripts
+          mountPath: /scripts
+      volumes:
+      - name: trustee-data
+        emptyDir: {}
+      - name: shared-data
+        emptyDir: {}
+      - name: sync-scripts
+        configMap:
+          name: data-sync-script
+          defaultMode: 0755 
