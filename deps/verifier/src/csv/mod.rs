@@ -199,3 +199,6 @@ fn parse_tee_evidence(
 
     Ok(claims_map as TeeEvidenceParsedClaim)
 }
+
+#[cfg(test)]
+mod tests;

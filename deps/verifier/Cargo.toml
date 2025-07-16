@@ -70,3 +70,4 @@ assert-json-diff.workspace = true
 rstest.workspace = true
 serial_test.workspace = true
 tokio.workspace = true
+mockito = "1.2.0"

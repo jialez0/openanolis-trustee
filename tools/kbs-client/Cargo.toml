@@ -25,6 +25,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+mockito = "1.2"
+
 [features]
 default = ["kbs_protocol/default"]
 sample_only = ["kbs_protocol/background_check", "kbs_protocol/passport", "kbs_protocol/rust-crypto"]

@@ -258,3 +258,9 @@ mod tests {
         aael.integrity_check(quote.rtmr_3()).unwrap();
     }
 }
+
+#[cfg(test)]
+mod quote_tests;
+
+#[cfg(test)]
+mod evidence_tests;

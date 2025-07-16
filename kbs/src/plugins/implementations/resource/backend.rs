@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{bail, Context, Error, Result};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use super::local_fs;
@@ -29,7 +29,7 @@ pub trait StorageBackend: Send + Sync {
     async fn list_secret_resources(&self) -> Result<Vec<ResourceDesc>>;
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceDesc {
     pub repository_name: String,
     pub resource_type: String,
@@ -70,7 +70,7 @@ impl fmt::Display for ResourceDesc {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum RepositoryConfig {
     LocalFs(local_fs::LocalFsRepoDesc),

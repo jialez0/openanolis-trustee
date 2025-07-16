@@ -540,3 +540,230 @@ async fn fetch_rim_file(base_url: &str, file_id: &str) -> Result<String> {
 
     Ok(rim_content)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito;
+    use std::sync::Arc;
+    use tokio::runtime::Runtime;
+    
+    // 测试RIM缓存初始化
+    #[test]
+    fn test_get_rim_cache() {
+        let rt = Runtime::new().unwrap();
+        let cache = rt.block_on(async {
+            let cache = get_rim_cache().await;
+            cache
+        });
+        
+        // 测试缓存是否是单例
+        let cache2 = rt.block_on(async {
+            let cache2 = get_rim_cache().await;
+            cache2
+        });
+        
+        assert!(Arc::ptr_eq(cache, cache2));
+    }
+    
+    // 测试获取RIM服务URL
+    #[test]
+    fn test_get_rim_service_url() {
+        let rt = Runtime::new().unwrap();
+        
+        // 测试环境变量优先级
+        let url = rt.block_on(async {
+            std::env::set_var("NV_RIM_URL", "https://test-rim-url.com");
+            let result = get_rim_service_url().await;
+            std::env::remove_var("NV_RIM_URL");
+            result
+        });
+        
+        assert!(url.is_ok());
+        assert_eq!(url.unwrap(), "https://test-rim-url.com");
+        
+        // 测试默认URL
+        let url = rt.block_on(async {
+            // 模拟元数据服务不可用
+            std::env::set_var("ALIYUN_METADATA_URL", "http://invalid-url");
+            let result = get_rim_service_url().await;
+            std::env::remove_var("ALIYUN_METADATA_URL");
+            result
+        });
+        
+        assert!(url.is_ok());
+        assert_eq!(url.unwrap(), DEFAULT_RIM_SERVICE_BASE_URL);
+    }
+    
+    // 测试解析RIM内容
+    #[test]
+    fn test_parse_rim_content() {
+        let rim_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <SoftwareIdentity name="TestRIM" version="1.0">
+            <Meta colloquialVersion="1.0" product="TestProduct" nvdls:FirmwareManufacturer="TestManufacturer" xmlns:nvdls="http://nvidia.com/swid/swidtags/2022-07"/>
+            <Payload>
+                <Resource type="Measurement" index="1" name="TestMeasurement" active="true" alternatives="2" size="32" Hash0="abcdef1234567890" Hash1="0987654321fedcba"/>
+            </Payload>
+        </SoftwareIdentity>"#;
+        
+        let result = parse_rim_content(rim_xml, "test");
+        assert!(result.is_ok());
+        
+        let rim_info = result.unwrap();
+        assert_eq!(rim_info.name, "TestRIM");
+        assert_eq!(rim_info.version, "1.0");
+        assert_eq!(rim_info.manufacturer, "TestManufacturer");
+        assert_eq!(rim_info.product, "TestProduct");
+        
+        let measurement = rim_info.measurements.get(&1).unwrap();
+        assert_eq!(measurement.name, "TestMeasurement");
+        assert_eq!(measurement.index, 1);
+        assert!(measurement.active);
+        assert_eq!(measurement.alternatives, 2);
+        assert_eq!(measurement.values.len(), 2);
+        assert_eq!(measurement.values[0], "abcdef1234567890");
+        assert_eq!(measurement.values[1], "0987654321fedcba");
+        assert_eq!(measurement.size, 32);
+    }
+    
+    // 测试RimParser
+    #[test]
+    fn test_rim_parser() {
+        let parser = RimParser::new();
+        
+        // 测试解析软件标识
+        let rim_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <SoftwareIdentity name="TestRIM" version="1.0">
+        </SoftwareIdentity>"#;
+        
+        let result = parser.parse(rim_xml, "test");
+        assert!(result.is_ok());
+        
+        let rim_info = result.unwrap();
+        assert_eq!(rim_info.name, "TestRIM");
+        assert_eq!(rim_info.version, "1.0");
+        
+        // 测试解析Meta信息
+        let rim_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <SoftwareIdentity name="TestRIM" version="1.0">
+            <Meta colloquialVersion="1.1" product="TestProduct" nvdls:FirmwareManufacturer="TestManufacturer" xmlns:nvdls="http://nvidia.com/swid/swidtags/2022-07"/>
+        </SoftwareIdentity>"#;
+        
+        let result = parser.parse(rim_xml, "test");
+        assert!(result.is_ok());
+        
+        let rim_info = result.unwrap();
+        assert_eq!(rim_info.version, "1.1");
+        assert_eq!(rim_info.product, "TestProduct");
+        assert_eq!(rim_info.manufacturer, "TestManufacturer");
+        
+        // 测试解析Resource信息
+        let rim_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <SoftwareIdentity name="TestRIM" version="1.0">
+            <Payload>
+                <Resource type="Measurement" index="1" name="TestMeasurement" active="true" alternatives="1" size="32" Hash0="abcdef1234567890"/>
+                <Resource type="NotMeasurement" index="2" name="IgnoreThis"/>
+                <Resource type="Measurement" index="3" name="TestMeasurement2" active="false" alternatives="2" size="64" Hash0="aabbccdd" Hash1="eeff0011"/>
+            </Payload>
+        </SoftwareIdentity>"#;
+        
+        let result = parser.parse(rim_xml, "test");
+        assert!(result.is_ok());
+        
+        let rim_info = result.unwrap();
+        assert_eq!(rim_info.measurements.len(), 2);
+        
+        let measurement1 = rim_info.measurements.get(&1).unwrap();
+        assert_eq!(measurement1.name, "TestMeasurement");
+        assert!(measurement1.active);
+        assert_eq!(measurement1.values.len(), 1);
+        
+        let measurement3 = rim_info.measurements.get(&3).unwrap();
+        assert_eq!(measurement3.name, "TestMeasurement2");
+        assert!(!measurement3.active);
+        assert_eq!(measurement3.alternatives, 2);
+        assert_eq!(measurement3.values.len(), 2);
+        
+        // 测试解析错误情况
+        let invalid_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <SoftwareIdentity>
+            <InvalidTag>
+        </SoftwareIdentity>"#;
+        
+        let result = parser.parse(invalid_xml, "test");
+        assert!(result.is_err());
+    }
+    
+    // 测试获取驱动RIM
+    #[test]
+    fn test_get_driver_rim() {
+        // 使用函数替换技术来模拟fetch_rim_file
+        // 由于我们不能直接替换函数，我们将使用环境变量来模拟缓存命中
+        let rt = Runtime::new().unwrap();
+        
+        // 测试缓存功能
+        let rim = rt.block_on(async {
+            // 先获取缓存实例
+            let cache = get_rim_cache().await;
+            
+            // 手动在缓存中添加一个条目
+            {
+                let mut cache_guard = cache.lock().unwrap();
+                cache_guard.insert("NV_GPU_DRIVER_GH100_123.45".to_string(), "Hello World".to_string());
+            }
+            
+            // 现在调用函数，应该从缓存中获取
+            let result = get_driver_rim("123.45").await;
+            result
+        });
+        
+        assert!(rim.is_ok(), "Failed to get driver RIM: {:?}", rim.err());
+        assert_eq!(rim.unwrap(), "Hello World");
+        
+        // 测试不同的GPU架构
+        let rim = rt.block_on(async {
+            // 设置GPU架构
+            std::env::set_var("GPU_ARCH_NAME", "BLACKWELL");
+            
+            // 手动在缓存中添加一个条目
+            let cache = get_rim_cache().await;
+            {
+                let mut cache_guard = cache.lock().unwrap();
+                cache_guard.insert("NV_GPU_CC_DRIVER_GB100_123.45".to_string(), "Blackwell".to_string());
+            }
+            
+            // 现在调用函数，应该从缓存中获取
+            let result = get_driver_rim("123.45").await;
+            std::env::remove_var("GPU_ARCH_NAME");
+            result
+        });
+        
+        assert!(rim.is_ok(), "Failed to get Blackwell driver RIM: {:?}", rim.err());
+        assert_eq!(rim.unwrap(), "Blackwell");
+    }
+    
+    // 测试获取VBIOS RIM
+    #[test]
+    fn test_get_vbios_rim() {
+        let rt = Runtime::new().unwrap();
+        
+        // 测试缓存功能
+        let rim = rt.block_on(async {
+            // 先获取缓存实例
+            let cache = get_rim_cache().await;
+            
+            // 手动在缓存中添加一个条目
+            {
+                let mut cache_guard = cache.lock().unwrap();
+                cache_guard.insert("NV_GPU_VBIOS_PROJECT_SKU_CHIP_1234".to_string(), "VBIOS RIM".to_string());
+            }
+            
+            // 现在调用函数，应该从缓存中获取
+            let result = get_vbios_rim("project", "sku", "chip", "12.34").await;
+            result
+        });
+        
+        assert!(rim.is_ok(), "Failed to get VBIOS RIM: {:?}", rim.err());
+        assert_eq!(rim.unwrap(), "VBIOS RIM");
+    }
+}

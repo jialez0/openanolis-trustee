@@ -4,7 +4,7 @@
 
 use super::{ResourceDesc, StorageBackend};
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     boxed::Box,
     fs,
@@ -15,7 +15,7 @@ use tokio::fs as async_fs;
 
 pub const DEFAULT_REPO_DIR_PATH: &str = "/opt/confidential-containers/kbs/repository";
 
-#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct LocalFsRepoDesc {
     #[serde(default)]
     pub dir_path: String,
@@ -163,14 +163,15 @@ impl LocalFs {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        local_fs::{LocalFs, LocalFsRepoDesc},
+        local_fs::{LocalFs, LocalFsRepoDesc, DEFAULT_REPO_DIR_PATH},
         ResourceDesc, StorageBackend,
     };
+    use std::path::Path;
 
     const TEST_DATA: &[u8] = b"testdata";
 
-    #[tokio::test]
-    async fn write_and_read_resource() {
+    // 辅助函数：创建测试环境
+    async fn setup_test_env() -> (tempfile::TempDir, LocalFs, ResourceDesc) {
         let tmp_dir = tempfile::tempdir().expect("create temp dir failed");
         let repo_desc = LocalFsRepoDesc {
             dir_path: tmp_dir.path().to_string_lossy().to_string(),
@@ -183,6 +184,30 @@ mod tests {
             resource_tag: "test".into(),
         };
 
+        (tmp_dir, local_fs, resource_desc)
+    }
+
+    #[tokio::test]
+    async fn test_default_repo_desc() {
+        let default_desc = LocalFsRepoDesc::default();
+        assert_eq!(default_desc.dir_path, DEFAULT_REPO_DIR_PATH);
+    }
+
+    #[tokio::test]
+    async fn test_new_local_fs() {
+        let tmp_dir = tempfile::tempdir().expect("create temp dir failed");
+        let repo_desc = LocalFsRepoDesc {
+            dir_path: tmp_dir.path().to_string_lossy().to_string(),
+        };
+
+        let _local_fs = LocalFs::new(&repo_desc).expect("create local fs failed");
+        assert!(Path::new(&format!("{}/default", &repo_desc.dir_path)).exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_and_read_resource() {
+        let (_tmp_dir, local_fs, resource_desc) = setup_test_env().await;
+
         local_fs
             .write_secret_resource(resource_desc.clone(), TEST_DATA)
             .await
@@ -193,5 +218,104 @@ mod tests {
             .expect("read secret resource failed");
 
         assert_eq!(&data[..], TEST_DATA);
+    }
+
+    #[tokio::test]
+    async fn test_delete_resource() {
+        let (_tmp_dir, local_fs, resource_desc) = setup_test_env().await;
+
+        // 先写入资源
+        local_fs
+            .write_secret_resource(resource_desc.clone(), TEST_DATA)
+            .await
+            .expect("write secret resource failed");
+
+        // 删除资源
+        local_fs
+            .delete_secret_resource(resource_desc.clone())
+            .await
+            .expect("delete secret resource failed");
+
+        // 验证资源已被删除
+        let result = local_fs.read_secret_resource(resource_desc.clone()).await;
+        assert!(result.is_err());
+
+        // 尝试删除不存在的资源
+        let result = local_fs.delete_secret_resource(resource_desc).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_resources() {
+        let (_tmp_dir, local_fs, resource_desc) = setup_test_env().await;
+
+        // 写入一些测试资源
+        local_fs
+            .write_secret_resource(resource_desc.clone(), TEST_DATA)
+            .await
+            .expect("write secret resource failed");
+
+        // 写入第二个资源
+        let resource_desc2 = ResourceDesc {
+            repository_name: "default".into(),
+            resource_type: "test2".into(),
+            resource_tag: "test2".into(),
+        };
+        local_fs
+            .write_secret_resource(resource_desc2.clone(), TEST_DATA)
+            .await
+            .expect("write second secret resource failed");
+
+        // 列出所有资源
+        let resources = local_fs.list_secret_resources().await.expect("list resources failed");
+        assert_eq!(resources.len(), 2);
+        assert!(resources.contains(&resource_desc));
+        assert!(resources.contains(&resource_desc2));
+    }
+
+    #[tokio::test]
+    async fn test_write_to_nonexistent_directory() {
+        let (_tmp_dir, local_fs, mut resource_desc) = setup_test_env().await;
+
+        // 使用不存在的目录路径
+        resource_desc.repository_name = "nonexistent".into();
+        resource_desc.resource_type = "newtype".into();
+
+        // 写入应该成功，因为会自动创建目录
+        let result = local_fs
+            .write_secret_resource(resource_desc.clone(), TEST_DATA)
+            .await;
+        assert!(result.is_ok());
+
+        // 验证目录被创建
+        let path = Path::new(&local_fs.repo_dir_path)
+            .join("nonexistent")
+            .join("newtype");
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_scan_empty_directory() {
+        let (_tmp_dir, local_fs, _) = setup_test_env().await;
+        
+        // 列出空目录的资源
+        let resources = local_fs.list_secret_resources().await.expect("list resources failed");
+        assert!(resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_invalid_resource_paths() {
+        let (_tmp_dir, local_fs, _) = setup_test_env().await;
+        
+        // 创建一个无效的资源描述（路径不完整）
+        let invalid_resource = ResourceDesc {
+            repository_name: "invalid".into(),
+            resource_type: "".into(),
+            resource_tag: "".into(),
+        };
+
+        // 尝试读取无效资源
+        let result = local_fs.read_secret_resource(invalid_resource.clone()).await;
+        assert!(result.is_err());
     }
 }

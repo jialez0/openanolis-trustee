@@ -94,7 +94,7 @@ impl From<&NebulaCredentialParams> for Vec<OsString> {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize, PartialEq)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq)]
 pub struct NebulaCaPluginConfig {
     work_dir: Option<String>,
     nebula_cert_bin_path: Option<String>,
@@ -161,7 +161,7 @@ impl TryFrom<NebulaCaPluginConfig> for NebulaCaPlugin {
 /// These properties can be provided in the KBS config
 /// under [plugins.self_signed_ca]. They are optional
 /// and match the `nebula-cert ca <...>` parameters.
-#[derive(Clone, Debug, Default, serde::Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize, PartialEq)]
 struct SelfSignedNebulaCaConfig {
     /// Name of the certificate authority
     name: Option<String>,

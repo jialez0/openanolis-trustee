@@ -13,14 +13,14 @@ use cryptoki::{
     types::AuthPin,
 };
 use derivative::Derivative;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::super::plugin_manager::ClientPlugin;
 
-#[derive(Derivative, Deserialize, Clone, PartialEq)]
+#[derive(Derivative, Deserialize, Serialize, Clone, PartialEq)]
 #[derivative(Debug)]
 pub struct Pkcs11Config {
     /// Path to the PKCS11 module.

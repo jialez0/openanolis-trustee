@@ -98,6 +98,10 @@ attestation-service = { path = "../attestation-service", default-features = fals
 rstest.workspace = true
 reference-value-provider-service.path = "../rvps"
 serial_test = "3.0"
+mockito = "1.2.0"
+mockall = "0.11"
+tokio = { version = "1.0", features = ["full", "test-util"] }
+tempfile = "3.2"
 
 [build-dependencies]
 tonic-build = { workspace = true, optional = true }

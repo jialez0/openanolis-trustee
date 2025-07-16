@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use confidential_data_hub::kms::{plugins::aliyun::AliyunKmsClient, Annotations, Getter};
 use derivative::Derivative;
 use log::info;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Derivative, Deserialize, Clone, PartialEq)]
+#[derive(Derivative, Deserialize, Serialize, Clone, PartialEq)]
 #[derivative(Debug)]
 pub struct AliyunKmsBackendConfig {
     #[derivative(Debug = "ignore")]

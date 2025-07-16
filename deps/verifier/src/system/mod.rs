@@ -108,3 +108,6 @@ fn parse_evidence(quote: &SystemEvidence) -> Result<TeeEvidenceParsedClaim> {
 
     Ok(claims_map as TeeEvidenceParsedClaim)
 }
+
+#[cfg(test)]
+mod tests;

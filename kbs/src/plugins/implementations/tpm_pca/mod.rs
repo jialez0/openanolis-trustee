@@ -16,7 +16,7 @@ use openssl::{
         X509Builder, X509NameBuilder, X509,
     },
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,7 +38,7 @@ const DEFAULT_WORK_DIR: &str = "/opt/confidential-containers/kbs/tpm-pca";
 // Default CA self-signed certificate duration (365d)
 const DEFAULT_CA_CERT_DURATION: &str = "365d";
 
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct TpmCaConfig {
     signing_key_path: Option<String>,
     cert_chain_path: Option<String>,
@@ -162,7 +162,7 @@ impl TryFrom<TpmCaConfig> for TpmCaPlugin {
 ///
 /// These properties can be provided in the KBS config
 /// under [plugins.self_signed_ca]. They are optional.
-#[derive(Clone, Debug, Default, serde::Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize, PartialEq)]
 struct SelfSignedTpmCaConfig {
     /// Name of the certificate authority
     name: Option<String>,
@@ -408,3 +408,6 @@ fn parse_duration(time_string: &str) -> Result<i64> {
         bail!("Invalid Format")
     }
 }
+
+#[cfg(test)]
+mod tests;

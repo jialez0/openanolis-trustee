@@ -9,6 +9,8 @@ use sha2::{Digest, Sha384};
 mod opaque_data;
 mod report;
 mod rim;
+#[cfg(test)]
+mod tests;
 
 use report::AttestationReport;
 use rim::{parse_rim_content, RimInfo};

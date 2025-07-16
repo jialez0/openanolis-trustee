@@ -141,6 +141,97 @@ pub fn to_verifier(tee: &Tee) -> Result<Box<dyn Verifier + Send + Sync>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kbs_types::Tee;
+
+    #[test]
+    fn test_to_verifier_tpm() {
+        let result = to_verifier(&Tee::Tpm);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_to_verifier_sample() {
+        let result = to_verifier(&Tee::Sample);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_to_verifier_tdx() {
+        let result = to_verifier(&Tee::Tdx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_to_verifier_snp() {
+        let result = to_verifier(&Tee::Snp);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_to_verifier_sgx() {
+        let result = to_verifier(&Tee::Sgx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_regularize_data_shorter() {
+        let data = b"hello";
+        let result = regularize_data(data, 10, "test_data", "test_arch");
+        assert_eq!(result.len(), 10);
+        assert_eq!(&result[..5], b"hello");
+        assert_eq!(&result[5..], &[0; 5]);
+    }
+
+    #[test]
+    fn test_regularize_data_equal() {
+        let data = b"hello";
+        let result = regularize_data(data, 5, "test_data", "test_arch");
+        assert_eq!(result, b"hello");
+    }
+
+    #[test]
+    fn test_regularize_data_longer() {
+        let data = b"hello world";
+        let result = regularize_data(data, 5, "test_data", "test_arch");
+        assert_eq!(result, b"hello");
+    }
+
+    #[test]
+    fn test_report_data_variants() {
+        let data = b"test data";
+        let report_data = ReportData::Value(data);
+        match report_data {
+            ReportData::Value(d) => assert_eq!(d, data),
+            ReportData::NotProvided => panic!("Unexpected variant"),
+        }
+
+        let not_provided = ReportData::NotProvided;
+        match not_provided {
+            ReportData::Value(_) => panic!("Unexpected variant"),
+            ReportData::NotProvided => {},
+        }
+    }
+
+    #[test]
+    fn test_init_data_hash_variants() {
+        let data = b"test hash";
+        let init_data_hash = InitDataHash::Value(data);
+        match init_data_hash {
+            InitDataHash::Value(d) => assert_eq!(d, data),
+            InitDataHash::NotProvided => panic!("Unexpected variant"),
+        }
+
+        let not_provided = InitDataHash::NotProvided;
+        match not_provided {
+            InitDataHash::Value(_) => panic!("Unexpected variant"),
+            InitDataHash::NotProvided => {},
+        }
+    }
+}
+
 pub type TeeEvidenceParsedClaim = serde_json::Value;
 
 pub enum ReportData<'a> {
