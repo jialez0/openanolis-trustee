@@ -16,7 +16,7 @@ pub const QUOTE_HEADER_SIZE: usize = 48;
 
 /// The quote header. It is designed to compatible with earlier versions of the quote.
 #[repr(C)]
-#[derive(Debug, Pread)]
+#[derive(Debug, Pread, Clone)]
 pub struct QuoteHeader {
     ///< 0:  The version this quote structure.
     pub version: [u8; 2],
@@ -56,7 +56,7 @@ impl fmt::Display for QuoteHeader {
 
 /// SGX Report2 body
 #[repr(C)]
-#[derive(Debug, Pread)]
+#[derive(Debug, Pread, Clone)]
 pub struct ReportBody2 {
     ///<  0:  TEE_TCB_SVN Array
     pub tcb_svn: [u8; 16],
@@ -129,7 +129,7 @@ impl fmt::Display for ReportBody2 {
 
 /// SGX Report2 body for quote v5
 #[repr(C)]
-#[derive(Debug, Pread)]
+#[derive(Debug, Pread, Clone)]
 pub struct ReportBody2v15 {
     ///<  0:  TEE_TCB_SVN Array
     pub tcb_svn: [u8; 16],
@@ -335,6 +335,10 @@ impl fmt::Display for Quote {
 }
 
 pub fn parse_tdx_quote(quote_bin: &[u8]) -> Result<Quote> {
+    if quote_bin.len() < QUOTE_HEADER_SIZE {
+        bail!("Quote data too short: {} bytes, expected at least {} bytes", quote_bin.len(), QUOTE_HEADER_SIZE);
+    }
+
     let quote_header = &quote_bin[..QUOTE_HEADER_SIZE];
     let header = quote_header
         .pread::<QuoteHeader>(0)
@@ -562,5 +566,252 @@ mod tests {
         let quote_bin = fs::read(quote).unwrap();
         let res = ecdsa_quote_verification(quote_bin.as_slice()).await;
         assert!(res.is_ok(), "{res:?}");
+    }
+
+    #[test]
+    fn test_quote_v5_type() {
+        // 测试 from_bytes
+        let valid_type_1 = [2u8, 0];
+        let valid_type_2 = [3u8, 0];
+        let invalid_type = [4u8, 0];
+        let too_short = [2u8];
+
+        assert!(matches!(QuoteV5Type::from_bytes(&valid_type_1), Ok(QuoteV5Type::TDX10)));
+        assert!(matches!(QuoteV5Type::from_bytes(&valid_type_2), Ok(QuoteV5Type::TDX15)));
+        assert!(QuoteV5Type::from_bytes(&invalid_type).is_err());
+        assert!(QuoteV5Type::from_bytes(&too_short).is_err());
+
+        // 测试 as_bytes
+        assert_eq!(QuoteV5Type::TDX10.as_bytes(), [2, 0]);
+        assert_eq!(QuoteV5Type::TDX15.as_bytes(), [3, 0]);
+
+        // 测试 Display trait
+        assert_eq!(format!("{}", QuoteV5Type::TDX10), "Quote v5 Type: TDX 1.0\n");
+        assert_eq!(format!("{}", QuoteV5Type::TDX15), "Quote v5 Type: TDX 1.5\n");
+    }
+
+    #[test]
+    fn test_quote_body_methods() {
+        // 创建测试数据
+        let report_data = [1u8; 64];
+        let mr_config_id = [2u8; 48];
+        let rtmr_0 = [3u8; 48];
+        let rtmr_1 = [4u8; 48];
+        let rtmr_2 = [5u8; 48];
+        let rtmr_3 = [6u8; 48];
+
+        // 创建 ReportBody2
+        let body = ReportBody2 {
+            tcb_svn: [0u8; 16],
+            mr_seam: [0u8; 48],
+            mrsigner_seam: [0u8; 48],
+            seam_attributes: [0u8; 8],
+            td_attributes: [0u8; 8],
+            xfam: [0u8; 8],
+            mr_td: [0u8; 48],
+            mr_config_id: mr_config_id.clone(),
+            mr_owner: [0u8; 48],
+            mr_owner_config: [0u8; 48],
+            rtmr_0: rtmr_0.clone(),
+            rtmr_1: rtmr_1.clone(),
+            rtmr_2: rtmr_2.clone(),
+            rtmr_3: rtmr_3.clone(),
+            report_data: report_data.clone(),
+        };
+
+        // 创建 Quote::V4
+        let quote_v4 = Quote::V4 {
+            header: QuoteHeader {
+                version: [4, 0],
+                att_key_type: [0, 0],
+                tee_type: [0, 0, 0, 0],
+                reserved: [0, 0, 0, 0],
+                vendor_id: [0; 16],
+                user_data: [0; 20],
+            },
+            body: body.clone(),
+        };
+
+        // 创建 Quote::V5 with TDX10
+        let quote_v5_tdx10 = Quote::V5 {
+            header: QuoteHeader {
+                version: [5, 0],
+                att_key_type: [0, 0],
+                tee_type: [0, 0, 0, 0],
+                reserved: [0, 0, 0, 0],
+                vendor_id: [0; 16],
+                user_data: [0; 20],
+            },
+            r#type: QuoteV5Type::TDX10,
+            size: [0, 0, 0, 0],
+            body: QuoteV5Body::Tdx10(body.clone()),
+        };
+
+        // 创建 Quote::V5 with TDX15
+        let body_v15 = ReportBody2v15 {
+            tcb_svn: [0u8; 16],
+            mr_seam: [0u8; 48],
+            mrsigner_seam: [0u8; 48],
+            seam_attributes: [0u8; 8],
+            td_attributes: [0u8; 8],
+            xfam: [0u8; 8],
+            mr_td: [0u8; 48],
+            mr_config_id: mr_config_id.clone(),
+            mr_owner: [0u8; 48],
+            mr_owner_config: [0u8; 48],
+            rtmr_0: rtmr_0.clone(),
+            rtmr_1: rtmr_1.clone(),
+            rtmr_2: rtmr_2.clone(),
+            rtmr_3: rtmr_3.clone(),
+            report_data: report_data.clone(),
+            tee_tcb_svn2: [0u8; 16],
+            mr_servicetd: [0u8; 48],
+        };
+
+        let quote_v5_tdx15 = Quote::V5 {
+            header: QuoteHeader {
+                version: [5, 0],
+                att_key_type: [0, 0],
+                tee_type: [0, 0, 0, 0],
+                reserved: [0, 0, 0, 0],
+                vendor_id: [0; 16],
+                user_data: [0; 20],
+            },
+            r#type: QuoteV5Type::TDX15,
+            size: [0, 0, 0, 0],
+            body: QuoteV5Body::Tdx15(body_v15),
+        };
+
+        // 测试所有 Quote 实例的方法
+        for quote in [quote_v4, quote_v5_tdx10, quote_v5_tdx15] {
+            assert_eq!(quote.report_data(), &report_data);
+            assert_eq!(quote.mr_config_id(), &mr_config_id);
+            assert_eq!(quote.rtmr_0(), &rtmr_0);
+            assert_eq!(quote.rtmr_1(), &rtmr_1);
+            assert_eq!(quote.rtmr_2(), &rtmr_2);
+            assert_eq!(quote.rtmr_3(), &rtmr_3);
+        }
+    }
+
+    #[test]
+    fn test_parse_tdx_quote_invalid_cases() {
+        // 测试无效的 quote 版本
+        let mut invalid_version_quote = vec![
+            // QuoteHeader (48 bytes)
+            6, 0,  // version [6, 0] - 无效版本
+            0, 0,  // att_key_type
+            0, 0, 0, 0,  // tee_type
+            0, 0, 0, 0,  // reserved
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // vendor_id
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // user_data
+        ];
+        // 添加额外的数据以满足 ReportBody2 的大小要求
+        invalid_version_quote.extend(vec![0; 584]);
+        assert!(parse_tdx_quote(&invalid_version_quote).is_err());
+
+        // 测试 V5 quote 无效的类型
+        let mut invalid_type_quote = vec![
+            // QuoteHeader (48 bytes)
+            5, 0,  // version [5, 0]
+            0, 0,  // att_key_type
+            0, 0, 0, 0,  // tee_type
+            0, 0, 0, 0,  // reserved
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // vendor_id
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // user_data
+            4, 0,  // invalid type (4)
+            0, 0, 0, 0,  // size
+        ];
+        // 添加额外的数据以满足 ReportBody2 的大小要求
+        invalid_type_quote.extend(vec![0; 584]);
+        assert!(parse_tdx_quote(&invalid_type_quote).is_err());
+
+        // 测试数据太短的情况
+        let too_short_quote = vec![5, 0];
+        assert!(parse_tdx_quote(&too_short_quote).is_err());
+    }
+
+    #[test]
+    fn test_display_implementations() {
+        // 测试 QuoteHeader Display
+        let header = QuoteHeader {
+            version: [4, 0],
+            att_key_type: [1, 0],
+            tee_type: [0, 0, 0, 0],
+            reserved: [0, 0, 0, 0],
+            vendor_id: [1; 16],
+            user_data: [2; 20],
+        };
+        let header_str = format!("{}", header);
+        assert!(header_str.contains("Version"));
+        assert!(header_str.contains("Attestation Signature Key Type"));
+        assert!(header_str.contains("TEE Type"));
+        assert!(header_str.contains("Vendor ID"));
+        assert!(header_str.contains("User Data"));
+
+        // 测试 ReportBody2 Display
+        let body = ReportBody2 {
+            tcb_svn: [1; 16],
+            mr_seam: [2; 48],
+            mrsigner_seam: [3; 48],
+            seam_attributes: [4; 8],
+            td_attributes: [5; 8],
+            xfam: [6; 8],
+            mr_td: [7; 48],
+            mr_config_id: [8; 48],
+            mr_owner: [9; 48],
+            mr_owner_config: [10; 48],
+            rtmr_0: [11; 48],
+            rtmr_1: [12; 48],
+            rtmr_2: [13; 48],
+            rtmr_3: [14; 48],
+            report_data: [15; 64],
+        };
+        let body_str = format!("{}", body);
+        assert!(body_str.contains("TCB SVN"));
+        assert!(body_str.contains("MRSEAM"));
+        assert!(body_str.contains("MRSIGNER_SEAM"));
+        assert!(body_str.contains("Report Data"));
+
+        // 测试 ReportBody2v15 Display
+        let body_v15 = ReportBody2v15 {
+            tcb_svn: [1; 16],
+            mr_seam: [2; 48],
+            mrsigner_seam: [3; 48],
+            seam_attributes: [4; 8],
+            td_attributes: [5; 8],
+            xfam: [6; 8],
+            mr_td: [7; 48],
+            mr_config_id: [8; 48],
+            mr_owner: [9; 48],
+            mr_owner_config: [10; 48],
+            rtmr_0: [11; 48],
+            rtmr_1: [12; 48],
+            rtmr_2: [13; 48],
+            rtmr_3: [14; 48],
+            report_data: [15; 64],
+            tee_tcb_svn2: [16; 16],
+            mr_servicetd: [17; 48],
+        };
+        let body_v15_str = format!("{}", body_v15);
+        assert!(body_v15_str.contains("TCB SVN"));
+        assert!(body_v15_str.contains("TEE TCB SVN2"));
+        assert!(body_v15_str.contains("MR SERVICETD"));
+
+        // 测试 Quote Display
+        let quote_v4 = Quote::V4 {
+            header: header.clone(),
+            body: body.clone(),
+        };
+        let quote_v4_str = format!("{}", quote_v4);
+        assert!(quote_v4_str.contains("TD Quote (V4)"));
+
+        let quote_v5 = Quote::V5 {
+            header,
+            r#type: QuoteV5Type::TDX10,
+            size: [0, 0, 0, 0],
+            body: QuoteV5Body::Tdx10(body),
+        };
+        let quote_v5_str = format!("{}", quote_v5);
+        assert!(quote_v5_str.contains("TD Quote (V5)"));
     }
 }
