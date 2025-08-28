@@ -1,10 +1,10 @@
 version: '3.2'
 services:
   kbs:
-    build:
-      context: .
-      dockerfile: Dockerfile.kbs
-    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/kbs:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.kbs
+    image: trustee-kbs:latest
     command: [
         "/usr/local/bin/kbs",
         "--config-file",
@@ -21,10 +21,10 @@ services:
     - as
 
   as:
-    build:
-      context: .
-      dockerfile: Dockerfile.as-grpc
-    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.as-grpc
+    image: trustee-as:latest
     ports:
     - "50004:50004"
     restart: always
@@ -45,10 +45,10 @@ services:
     - rvps
 
   as-restful:
-    build:
-      context: .
-      dockerfile: Dockerfile.as-restful
-    # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/as-restful:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.as-restful
+    image: trustee-as-restful:latest
     ports:
     - "50005:50005"
     restart: always
@@ -70,9 +70,10 @@ services:
 
   rvps:
     # image: trustee-registry.cn-hangzhou.cr.aliyuncs.com/instance/rvps:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.rvps
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.rvps
+    image: trustee-rvps:latest
     restart: always # keep the server running
     ports:
       - "50003:50003"
@@ -86,10 +87,10 @@ services:
     ]
 
   gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile.trustee-gateway
-    # image: localhost/trustee-gateway:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.trustee-gateway
+    image: trustee-gateway:latest
     restart: always
     ports:
       - "8081:8081"
@@ -107,9 +108,10 @@ services:
     - rvps
 
   frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.frontend
+    image: trustee-frontend:latest
     ports:
       - "8082:8082"
     depends_on:
