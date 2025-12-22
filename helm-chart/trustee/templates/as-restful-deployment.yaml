@@ -61,7 +61,10 @@ spec:
             - name: sgx-config
               mountPath: /etc/sgx-config
             - name: policy
-              mountPath: /opt/confidential-containers/attestation-service/opa
+              mountPath: /opt/confidential-containers/attestation-service
+              {{- if .Values.sharedStorage.enabled }}
+              subPath: as-data
+              {{- end }}
       dnsConfig:
         nameservers:
           - 100.100.2.136
@@ -91,8 +94,14 @@ spec:
         - name: sgx-config
           configMap:
             name: sgx-config
+        {{- if .Values.sharedStorage.enabled }}
+        - name: policy
+          persistentVolumeClaim:
+            claimName: {{ if .Values.sharedStorage.existingClaim }}{{ .Values.sharedStorage.existingClaim }}{{ else }}{{ .Release.Name }}-shared-data{{ end }}
+        {{- else }}
         - name: policy
           emptyDir: {}
+        {{- end }}
       {{- with .Values.asrestful.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

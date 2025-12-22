@@ -6,7 +6,7 @@ metadata:
     {{- include "coco-kbs.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.kbs.replicaCount }}
-  serviceName: kbs
+  serviceName: {{- if .Values.kbsRouting.enabled }}kbs-headless{{- else }}kbs{{- end }}
   selector:
     matchLabels:
       app: kbs
@@ -63,7 +63,10 @@ spec:
             - name: user-keys
               mountPath: /opt/confidential-containers/kbs/user-keys
             - name: data
-              mountPath: /opt/confidential-containers/kbs/repository
+              mountPath: /opt/confidential-containers/kbs
+              {{- if .Values.sharedStorage.enabled }}
+              subPath: kbs-data
+              {{- end }}
             {{- range .Values.kbs.resourceRepository }}
             - name: "{{ .repoName }}-{{ .type }}"
               mountPath: "/opt/confidential-containers/kbs/repository/{{ .repoName }}/{{ .type }}"
@@ -114,11 +117,14 @@ spec:
           secret:
             optional: true
             secretName: {{ .Values.kbs.userKeysSecretName }}
-  {{- if .Values.kbs.storage.enabled }}
-  {{- else }}
+        {{- if .Values.sharedStorage.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ if .Values.sharedStorage.existingClaim }}{{ .Values.sharedStorage.existingClaim }}{{ else }}{{ .Release.Name }}-shared-data{{ end }}
+        {{- else if not .Values.kbs.storage.enabled }}
         - name: data
           emptyDir: {}
-  {{- end }}
+        {{- end }}
         {{- range .Values.kbs.resourceRepository }}
         - name: "{{ .repoName }}-{{ .type }}"
           secret:
@@ -137,7 +143,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
-{{- if .Values.kbs.storage.enabled }}
+{{- if and .Values.kbs.storage.enabled (not .Values.sharedStorage.enabled) }}
   volumeClaimTemplates:
   - metadata:
       name: data

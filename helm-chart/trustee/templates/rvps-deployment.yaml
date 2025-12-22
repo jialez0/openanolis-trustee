@@ -59,12 +59,21 @@ spec:
               mountPath: /etc/rvps-config
             - mountPath: /opt/confidential-containers/attestation-service/reference_values
               name: reference-values
+              {{- if .Values.sharedStorage.enabled }}
+              subPath: rvps-reference-values
+              {{- end }}
       volumes:
         - name: config
           configMap:
             name: rvps-config
+        {{- if .Values.sharedStorage.enabled }}
+        - name: reference-values
+          persistentVolumeClaim:
+            claimName: {{ if .Values.sharedStorage.existingClaim }}{{ .Values.sharedStorage.existingClaim }}{{ else }}{{ .Release.Name }}-shared-data{{ end }}
+        {{- else }}
         - name: reference-values
           emptyDir: {}
+        {{- end }}
       {{- with .Values.rvps.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

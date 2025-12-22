@@ -1,0 +1,55 @@
+{{- if .Values.kbsRouting.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kbs-router
+  labels:
+    app: kbs-router
+    {{- include "coco-kbs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.kbsRouting.replicaCount | default 2 }}
+  selector:
+    matchLabels:
+      app: kbs-router
+      {{- include "coco-kbs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: kbs-router
+        {{- include "coco-kbs.selectorLabels" . | nindent 8 }}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: kbs-router
+                    {{- include "coco-kbs.selectorLabels" . | nindent 20 }}
+      containers:
+        - name: envoy
+          image: "{{ .Values.kbsRouting.image.repository }}:{{ .Values.kbsRouting.image.tag }}"
+          imagePullPolicy: {{ .Values.kbsRouting.image.pullPolicy }}
+          args:
+            - "-c"
+            - "/etc/envoy/envoy.yaml"
+          ports:
+            - name: http
+              containerPort: {{ .Values.kbsRouting.service.port }}
+              protocol: TCP
+            - name: admin
+              containerPort: 9901
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/envoy/envoy.yaml
+              subPath: envoy.yaml
+      volumes:
+        - name: config
+          configMap:
+            name: kbs-router-config
+{{- end }}
+
+

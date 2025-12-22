@@ -15,7 +15,7 @@ data:
         key_file: ""
 
     kbs:
-      url: "http://kbs:8080"
+      url: {{- if .Values.kbsRouting.enabled -}}"http://kbs-router:{{ .Values.kbsRouting.service.port }}"{{- else -}}"http://kbs:8080"{{- end }}
       insecure_http: true
       ca_cert_file: ""
 

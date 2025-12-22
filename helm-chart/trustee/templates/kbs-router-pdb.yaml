@@ -1,0 +1,17 @@
+{{- if and .Values.kbsRouting.enabled .Values.kbsRouting.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kbs-router
+  labels:
+    app: kbs-router
+    {{- include "coco-kbs.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.kbsRouting.podDisruptionBudget.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      app: kbs-router
+      {{- include "coco-kbs.selectorLabels" . | nindent 6 }}
+{{- end }}
+
+

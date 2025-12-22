@@ -1,0 +1,165 @@
+{{- if .Values.kbsRouting.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kbs-router-config
+  labels:
+    {{- include "coco-kbs.labels" . | nindent 4 }}
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: kbs_router_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: {{ .Values.kbsRouting.service.port }}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: kbs_router
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                    route_config:
+                      name: kbs_router_routes
+                      virtual_hosts:
+                        - name: kbs_router_vhost
+                          domains: ["*"]
+                          routes:
+                            - match:
+                                prefix: "/"
+                              route:
+                                cluster_header: "x-kbs-cluster"
+                                timeout: 0s
+                    http_filters:
+                      - name: envoy.filters.http.lua
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                          inline_code: |
+                            -- kbs-router:
+                            -- 1) If client cookie has kbs-session-id="<ordinal>.<real>", route to kbs-<ordinal>
+                            --    and strip the "<ordinal>." prefix before forwarding to KBS.
+                            -- 2) If client cookie has no prefix (or no cookie yet), pick an ordinal via round-robin,
+                            --    route to that KBS Pod, and rewrite Set-Cookie on the way back to include "<ordinal>."
+                            -- This achieves precise per-session routing without changing gateway/frontend/kbs code.
+                            local rr = 0
+
+                            local function parse_cookie(header_value, cookie_name)
+                              if header_value == nil then return nil end
+                              -- Match "name=value" where value stops at ';'
+                              local pat = cookie_name .. "=([^;]+)"
+                              return string.match(header_value, pat)
+                            end
+
+                            local function replace_cookie(header_value, cookie_name, new_value)
+                              if header_value == nil then return nil end
+                              -- Replace first occurrence of name=<...> up to ';' or end
+                              local pat = cookie_name .. "=[^;]+"
+                              local rep = cookie_name .. "=" .. new_value
+                              local out, n = string.gsub(header_value, pat, rep, 1)
+                              if n == 0 then
+                                return header_value
+                              end
+                              return out
+                            end
+
+                            function envoy_on_request(handle)
+                              local headers = handle:headers()
+                              local cookie = headers:get("cookie")
+
+                              local raw = parse_cookie(cookie, "kbs%-session%-id")
+                              local ordinal = nil
+                              local real = nil
+
+                              if raw ~= nil then
+                                local o, r = string.match(raw, "^(%d+)%.(.+)$")
+                                if o ~= nil and r ~= nil then
+                                  ordinal = tonumber(o)
+                                  real = r
+                                end
+                              end
+
+                              if ordinal == nil then
+                                rr = rr + 1
+                                ordinal = (rr - 1) % {{ .Values.kbs.replicaCount }}
+                              end
+
+                              -- Persist chosen ordinal for response phase
+                              handle:streamInfo():dynamicMetadata():set("kbs_router", "ordinal", tostring(ordinal))
+
+                              -- Route via cluster_header
+                              headers:replace("x-kbs-cluster", "kbs-" .. tostring(ordinal))
+
+                              -- If client sent prefixed session id, strip prefix before forwarding to KBS
+                              if real ~= nil and cookie ~= nil then
+                                headers:replace("cookie", replace_cookie(cookie, "kbs%-session%-id", real))
+                              end
+                            end
+
+                            function envoy_on_response(handle)
+                              local headers = handle:headers()
+                              local md = handle:streamInfo():dynamicMetadata():get("kbs_router")
+                              local ordinal = nil
+                              if md ~= nil then
+                                ordinal = md["ordinal"]
+                              end
+                              if ordinal == nil then
+                                return
+                              end
+
+                              -- Note: Envoy Lua headers API typically exposes only one Set-Cookie value via get().
+                              -- Trustee KBS auth sets one session cookie (kbs-session-id), so this is sufficient here.
+                              local sc = headers:get("set-cookie")
+                              if sc == nil then
+                                return
+                              end
+
+                              local val = string.match(sc, "kbs%-session%-id=([^;]+)")
+                              if val == nil then
+                                return
+                              end
+
+                              -- Strip existing ordinal prefix if any, then add our chosen one
+                              local _, real = string.match(val, "^(%d+)%.(.+)$")
+                              if real ~= nil then
+                                val = real
+                              end
+                              local new_val = tostring(ordinal) .. "." .. val
+
+                              local new_sc = string.gsub(sc, "kbs%-session%-id=[^;]+", "kbs-session-id=" .. new_val, 1)
+                              headers:replace("set-cookie", new_sc)
+                            end
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+      clusters:
+{{- range $i, $e := until (int .Values.kbs.replicaCount) }}
+        - name: kbs-{{ $i }}
+          connect_timeout: 2s
+          type: STRICT_DNS
+          dns_lookup_family: V4_ONLY
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: kbs-{{ $i }}
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: kbs-{{ $i }}.kbs-headless
+                          port_value: {{ $.Values.kbs.service.port }}
+{{- end }}
+    admin:
+      access_log_path: /tmp/admin_access.log
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 9901
+{{- end }}
+
+

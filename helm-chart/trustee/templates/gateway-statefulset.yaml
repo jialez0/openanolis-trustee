@@ -53,15 +53,21 @@ spec:
               subPath: trustee-gateway.yml
             - name: data
               mountPath: /app/data
+              {{- if .Values.sharedStorage.enabled }}
+              subPath: gateway-data
+              {{- end }}
       volumes:
         - name: config
           configMap:
             name: gateway-config
-  {{- if .Values.gateway.storage.enabled }}
-  {{- else }}
+        {{- if .Values.sharedStorage.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ if .Values.sharedStorage.existingClaim }}{{ .Values.sharedStorage.existingClaim }}{{ else }}{{ .Release.Name }}-shared-data{{ end }}
+        {{- else if not .Values.gateway.storage.enabled }}
         - name: data
           emptyDir: {}
-  {{- end }}
+        {{- end }}
       {{- with .Values.gateway.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -71,7 +77,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
-{{- if .Values.gateway.storage.enabled }}
+{{- if and .Values.gateway.storage.enabled (not .Values.sharedStorage.enabled) }}
   volumeClaimTemplates:
   - metadata:
       name: data

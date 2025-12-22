@@ -1,0 +1,18 @@
+{{- if and .Values.sharedStorage.enabled (not .Values.sharedStorage.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-shared-data
+  labels:
+    {{- include "coco-kbs.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.sharedStorage.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ .Values.sharedStorage.size | default "20Gi" }}
+  {{- if .Values.sharedStorage.storageClass }}
+  storageClassName: {{ .Values.sharedStorage.storageClass }}
+  {{- end }}
+{{- end }}
+
